@@ -159,6 +159,7 @@ All commands are run via `edgar-etl`:
 ```bash
 edgar-etl init-collection                         # Create collection + indexes
 edgar-etl consume                                 # Start Kafka consumer
+edgar-etl consume --group-id edgar-etl-replay     # Replay topic from offset 0
 edgar-etl process-event --json path/to.json       # Process one event offline
 edgar-etl process-file --file ... --ticker ...    # Process one local file
 edgar-etl search "your question" --top-k 5        # Semantic search
@@ -177,7 +178,21 @@ edgar-etl consume
 - Skips filings already in the collection (by `accession_number`)
 - Use `--force` on `process-event` / `process-file` to reprocess
 
-To replay from offset 0, use a new consumer group:
+#### Replay the entire topic
+
+Kafka tracks offsets per **consumer group**. To read from the beginning, pass a **new** group name that has never consumed the topic:
+
+```bash
+edgar-etl consume --group-id edgar-etl-replay
+```
+
+Each new `--group-id` starts at the earliest offset (`KAFKA_AUTO_OFFSET_RESET=earliest` by default). Already-loaded filings are skipped unless you also pass `--force`:
+
+```bash
+edgar-etl consume --group-id edgar-etl-replay --force
+```
+
+You can also set the default group in `.env` instead of using the flag:
 
 ```env
 KAFKA_GROUP_ID=edgar-etl-replay
@@ -295,4 +310,5 @@ Extraction tests use the sample 8-K at `/Volumes/Transcend/edgar/AEE/...` if the
 | `filing not found` | External drive unmounted or wrong `local_path` in Kafka event |
 | Poor search results | Use the same `EMBEDDING_MODEL` for load and search |
 | Reprocess a filing | `edgar-etl process-event --json ... --force` |
-| Replay Kafka from start | Set a new `KAFKA_GROUP_ID` in `.env` |
+| Replay Kafka from start | `edgar-etl consume --group-id <new-name>` |
+| Replay and re-embed all filings | Add `--force` to the replay command above |

@@ -19,14 +19,21 @@ def _shutdown_handler(signum: int, frame: object) -> None:
     _running = False
 
 
-def run_consumer(settings: Settings | None = None) -> None:
+def run_consumer(
+    settings: Settings | None = None,
+    *,
+    group_id: str | None = None,
+    skip_if_processed: bool = True,
+) -> None:
     settings = settings or Settings()
     configure_logging(settings.log_level)
+
+    effective_group_id = group_id or settings.kafka_group_id
 
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": settings.kafka_group_id,
+            "group.id": effective_group_id,
             "auto.offset.reset": settings.kafka_auto_offset_reset,
             "enable.auto.commit": False,
         }
@@ -40,7 +47,9 @@ def run_consumer(settings: Settings | None = None) -> None:
     logger.info(
         "kafka consumer started",
         topic=settings.kafka_topic,
-        group_id=settings.kafka_group_id,
+        group_id=effective_group_id,
+        auto_offset_reset=settings.kafka_auto_offset_reset,
+        skip_if_processed=skip_if_processed,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         qdrant_url=settings.qdrant_url,
         collection=settings.qdrant_collection,
@@ -58,7 +67,12 @@ def run_consumer(settings: Settings | None = None) -> None:
 
             try:
                 event = parse_event(message.value())
-                process_filing_event(event, settings, store=store)
+                process_filing_event(
+                    event,
+                    settings,
+                    store=store,
+                    skip_if_processed=skip_if_processed,
+                )
                 consumer.commit(message=message, asynchronous=False)
             except Exception:
                 logger.exception(

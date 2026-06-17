@@ -65,7 +65,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reprocess even if accession already exists",
     )
 
-    subparsers.add_parser("consume", help="Start Kafka consumer")
+    consume_parser = subparsers.add_parser("consume", help="Start Kafka consumer")
+    consume_parser.add_argument(
+        "--group-id",
+        metavar="NAME",
+        help=(
+            "Kafka consumer group id (default: KAFKA_GROUP_ID from config). "
+            "Use a new name to replay the topic from the earliest offset."
+        ),
+    )
+    consume_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess filings even if accession already exists in Qdrant",
+    )
 
     search_parser = subparsers.add_parser(
         "search",
@@ -140,7 +153,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "consume":
-        run_consumer(settings)
+        run_consumer(
+            settings,
+            group_id=args.group_id,
+            skip_if_processed=not args.force,
+        )
         return
 
     if args.command == "search":
