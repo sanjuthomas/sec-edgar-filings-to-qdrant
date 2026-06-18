@@ -6,6 +6,8 @@ This service listens to Kafka for `filing.downloaded` events, reads filings from
 
 Companion project: [sec-edgar-filings-to-pgvector](https://github.com/sanjuthomas/sec-edgar-filings-to-pgvector) (same pipeline, PostgreSQL + pgvector backend).
 
+Licensed under the [MIT License](LICENSE).
+
 ## Quick start (Docker)
 
 **1. Start the producer stack** (Kafka, downloader) from [sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings):
@@ -402,6 +404,7 @@ The [search UI](#semantic-search-ui) and CLI return source passages, not a synth
 
 ```
 sec-edgar-filings-to-qdrant/
+├── LICENSE                    # MIT License
 ├── Dockerfile                 # ETL consumer image
 ├── docker-compose.yml         # Qdrant + edgar-qdrant-etl + edgar-qdrant-search
 ├── pyproject.toml
@@ -451,3 +454,7 @@ Extraction tests use the sample 8-K at `/Volumes/Transcend/edgar/AEE/...` if the
 | Reprocess a filing | `edgar-etl process-event --json ... --force` |
 | Replay Kafka from start | `edgar-etl consume --group-id <new-name>` (or `docker compose run --rm edgar-qdrant-etl edgar-etl consume --group-id <new-name>`) |
 | Replay and re-embed all filings | Add `--force` to the replay command above |
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE).
