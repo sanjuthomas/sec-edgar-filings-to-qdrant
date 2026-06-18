@@ -6,21 +6,37 @@ This service listens to Kafka for `filing.downloaded` events, reads filings from
 
 Companion project: [sec-edgar-filings-to-pgvector](https://github.com/sanjuthomas/sec-edgar-filings-to-pgvector) (same pipeline, PostgreSQL + pgvector backend).
 
-## Quick start
+## Quick start (Docker)
+
+**1. Start the producer stack** (Kafka, downloader) from [sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings):
+
+```bash
+git clone https://github.com/sanjuthomas/sec-edgar-filings.git
+cd sec-edgar-filings
+cp .env.example .env   # set SEC_USER_AGENT
+docker compose up -d
+docker compose --profile jobs run --rm download-sp500   # optional: fetch filings
+```
+
+**2. Start this consumer stack** (Qdrant + ETL):
 
 ```bash
 git clone https://github.com/sanjuthomas/sec-edgar-filings-to-qdrant.git
 cd sec-edgar-filings-to-qdrant
-
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+mkdir -p /Volumes/Transcend/qdrant-data
 cp .env.example .env
-
-docker compose up -d              # Qdrant on :6333, data at /Volumes/Transcend/qdrant-data
-edgar-etl init-collection
-edgar-etl process-event --json examples/sample-event.json   # offline test
-edgar-etl consume               # Kafka consumer (when Kafka is running)
+docker compose up -d --build
+docker compose run --rm edgar-etl edgar-etl init-collection   # first time only
+docker compose ps
 ```
+
+**3. Verify**
+
+```bash
+docker compose logs -f edgar-etl    # should connect to kafka:9092
+```
+
+Qdrant dashboard: http://localhost:6333/dashboard
 
 ## Data flow
 
@@ -76,30 +92,74 @@ sequenceDiagram
 
 | In scope | Out of scope |
 |----------|--------------|
-| Consume Kafka events | Download filings from SEC EDGAR |
-| Read files from `local_path` | LLM-generated answers (RAG chat) |
-| Extract, chunk, embed, load | SEC rate limiting / User-Agent handling |
+| Read `.htm` files from `/Volumes/Transcend/edgar` | Download filings from SEC EDGAR |
+| Consume Kafka events (read-only) | Run or manage Kafka |
+| Extract, chunk, embed, load into Qdrant | LLM-generated answers (RAG chat) |
+| Run Qdrant + ETL consumer in Docker | SEC rate limiting / User-Agent handling |
+
+**Kafka lives in [sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings)** — that project downloads filings and publishes Kafka events. This project only connects as a downstream consumer.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph producer ["sec-edgar-filings (producer)"]
+        DL[Downloader / API]
+        Kafka[[Kafka]]
+        Disk[(/Volumes/Transcend/edgar)]
+        DL --> Disk
+        DL --> Kafka
+    end
+
+    subgraph consumer ["sec-edgar-filings-to-qdrant (this repo)"]
+        ETL[edgar-etl]
+        Qdrant[(Qdrant)]
+        ETL --> Qdrant
+    end
+
+    Kafka -->|filing.downloaded| ETL
+    Disk -->|read .htm| ETL
+```
+
+Both stacks join the same Docker network (`sec-edgar-filings_default` by default) so `edgar-etl` can reach `kafka` by service name.
 
 ## Prerequisites
 
-- **Python 3.11+**
-- **Qdrant** (Docker recommended)
-- **Kafka** (only for `consume` mode)
-- Local EDGAR filing files (e.g. `/Volumes/Transcend/edgar/...`)
+- **Docker** with Compose v2
+- **[sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings)** running (`kafka`, and downloaded filings)
+- External drive mounted at `/Volumes/Transcend/edgar` (shared with sec-edgar-filings)
 
-### Qdrant (Docker)
+### What runs where
 
-Data is persisted to `/Volumes/Transcend/qdrant-data`:
+| Service | Project | Container | Purpose |
+|---------|---------|-----------|---------|
+| Kafka | sec-edgar-filings | `kafka` | `filing.downloaded` events (producer publishes, ETL consumes) |
+| Qdrant | **this repo** | `edgar-qdrant` | Vector store for embeddings |
+| ETL consumer | **this repo** | `edgar-etl` | Kafka → embed → Qdrant |
 
-```bash
-docker compose up -d
-```
+**Host access to Qdrant:**
 
-Qdrant dashboard: http://localhost:6333/dashboard
+| Field | Value |
+|-------|-------|
+| REST API | http://localhost:6333 |
+| Dashboard | http://localhost:6333/dashboard |
+| gRPC | localhost:6334 |
 
-REST API: http://localhost:6333
+Data is persisted to `/Volumes/Transcend/qdrant-data`.
 
-## Installation
+### Local filing storage (`/Volumes/Transcend/edgar`)
+
+**Filing content always comes from the local filesystem**, not from Kafka. Kafka only provides metadata and processing triggers; the ETL opens and reads the `.htm` file at `local_path`.
+
+Files are downloaded to `/Volumes/Transcend/edgar` by [sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings). This project mounts that same directory read-only into the `edgar-etl` container at the **identical path**, so `local_path` values like `/Volumes/Transcend/edgar/AAPL/.../filing.htm` work inside Docker without translation.
+
+On macOS, ensure Docker Desktop has file sharing enabled for `/Volumes`.
+
+Paths must stay under `EDGAR_DATA_DIR` (default: `/Volumes/Transcend/edgar`).
+
+## Installation (local dev, optional)
+
+For offline commands (`process-file`, `search`, tests) without running the consumer in Docker:
 
 ```bash
 git clone https://github.com/sanjuthomas/sec-edgar-filings-to-qdrant.git
@@ -110,13 +170,12 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 cp .env.example .env
-# Edit .env if needed
-```
+# Override for host-side dev (sec-edgar-filings still provides kafka):
+#   QDRANT_URL=http://localhost:6333
+#   KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 
-Initialize the Qdrant collection:
-
-```bash
-edgar-etl init-collection
+docker compose up -d qdrant
+docker compose run --rm edgar-etl edgar-etl init-collection
 ```
 
 ## Configuration
@@ -124,10 +183,17 @@ edgar-etl init-collection
 Copy `.env.example` to `.env`:
 
 ```env
+# Network created by sec-edgar-filings docker compose
+SEC_EDGAR_DOCKER_NETWORK=sec-edgar-filings_default
+
 QDRANT_URL=http://localhost:6333
 QDRANT_COLLECTION=filing_chunks
 
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+EDGAR_DATA_DIR=/Volumes/Transcend/edgar
+ALLOWED_FORMS=10-K,10-Q,10-K/A,10-Q/A
+
+# Read-only — service runs in sec-edgar-filings
+KAFKA_BOOTSTRAP_SERVERS=kafka:9092
 KAFKA_TOPIC=filings
 KAFKA_GROUP_ID=edgar-etl
 KAFKA_AUTO_OFFSET_RESET=earliest
@@ -144,9 +210,14 @@ LOG_LEVEL=INFO
 
 | Variable | Description |
 |----------|-------------|
+| `SEC_EDGAR_DOCKER_NETWORK` | Docker network from sec-edgar-filings compose (default: `sec-edgar-filings_default`) |
 | `QDRANT_URL` | Qdrant REST API URL |
 | `QDRANT_COLLECTION` | Collection name for filing chunks |
-| `KAFKA_TOPIC` | Topic to consume (e.g. `filings`) |
+| `EDGAR_DATA_DIR` | Root directory for `.htm` filing files on disk (default: `/Volumes/Transcend/edgar`) |
+| `EDGAR_HOST_PATH` | Host bind-mount path for Docker (Compose only; defaults to `EDGAR_DATA_DIR`) |
+| `ALLOWED_FORMS` | Comma-separated forms to process (others are skipped) |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker — **read-only consumer**; service runs in sec-edgar-filings |
+| `KAFKA_TOPIC` | Topic to consume (default in sec-edgar-filings: `filings`) |
 | `KAFKA_GROUP_ID` | Consumer group for offset tracking |
 | `KAFKA_AUTO_OFFSET_RESET` | `earliest` = start from offset 0 for new groups |
 | `EMBEDDING_MODEL` | Hugging Face model (384 dimensions) |
@@ -154,7 +225,16 @@ LOG_LEVEL=INFO
 
 ## CLI commands
 
-All commands are run via `edgar-etl`:
+All commands are run via `edgar-etl`. In Docker:
+
+```bash
+docker compose run --rm edgar-etl edgar-etl init-collection
+docker compose up -d edgar-etl          # Kafka consumer (default CMD)
+docker compose run --rm edgar-etl edgar-etl search "revenue growth" --top-k 5
+docker compose run --rm edgar-etl edgar-etl consume --group-id edgar-etl-replay
+```
+
+Locally:
 
 ```bash
 edgar-etl init-collection                         # Create collection + indexes
@@ -269,8 +349,9 @@ edgar-etl search "executive compensation approval"
 
 ```
 sec-edgar-filings-to-qdrant/
+├── Dockerfile                 # ETL consumer image
+├── docker-compose.yml         # Qdrant + edgar-etl (joins sec-edgar-filings network)
 ├── pyproject.toml
-├── docker-compose.yml
 ├── .env.example
 ├── examples/sample-event.json
 ├── src/edgar_etl/
@@ -306,9 +387,11 @@ Extraction tests use the sample 8-K at `/Volumes/Transcend/edgar/AEE/...` if the
 
 | Problem | Fix |
 |---------|-----|
-| `Connection refused` on Qdrant | Run `docker compose up -d` |
-| `filing not found` | External drive unmounted or wrong `local_path` in Kafka event |
+| `network sec-edgar-filings_default not found` | Start [sec-edgar-filings](https://github.com/sanjuthomas/sec-edgar-filings) first: `docker compose up -d` |
+| ETL can't reach Kafka | Confirm sec-edgar-filings is running; check `SEC_EDGAR_DOCKER_NETWORK` matches `docker network ls` |
+| `Connection refused` on Qdrant | Run `docker compose up -d` here and check `docker compose ps` |
+| `filing not found` | External drive unmounted; path outside `EDGAR_DATA_DIR`; or Docker can't access `/Volumes` (enable in Docker Desktop → Settings → Resources → File sharing) |
 | Poor search results | Use the same `EMBEDDING_MODEL` for load and search |
 | Reprocess a filing | `edgar-etl process-event --json ... --force` |
-| Replay Kafka from start | `edgar-etl consume --group-id <new-name>` |
+| Replay Kafka from start | `edgar-etl consume --group-id <new-name>` (or `docker compose run --rm edgar-etl edgar-etl consume --group-id <new-name>`) |
 | Replay and re-embed all filings | Add `--force` to the replay command above |
