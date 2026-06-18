@@ -40,7 +40,7 @@ services:
       # Read-only consumer — Kafka runs in sec-edgar-filings compose.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: filings
-      KAFKA_GROUP_ID: edgar-etl
+      KAFKA_GROUP_ID: edgar-qdrant-etl
       KAFKA_AUTO_OFFSET_RESET: earliest
     volumes:
       # Filing .htm content is read from this host path (same as sec-edgar-filings).

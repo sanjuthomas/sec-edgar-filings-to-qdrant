@@ -195,7 +195,7 @@ ALLOWED_FORMS=10-K,10-Q,10-K/A,10-Q/A
 # Read-only — service runs in sec-edgar-filings
 KAFKA_BOOTSTRAP_SERVERS=kafka:9092
 KAFKA_TOPIC=filings
-KAFKA_GROUP_ID=edgar-etl
+KAFKA_GROUP_ID=edgar-qdrant-etl
 KAFKA_AUTO_OFFSET_RESET=earliest
 
 EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
@@ -231,7 +231,7 @@ All commands are run via `edgar-etl`. In Docker:
 docker compose run --rm edgar-etl edgar-etl init-collection
 docker compose up -d edgar-etl          # Kafka consumer (default CMD)
 docker compose run --rm edgar-etl edgar-etl search "revenue growth" --top-k 5
-docker compose run --rm edgar-etl edgar-etl consume --group-id edgar-etl-replay
+docker compose run --rm edgar-etl edgar-etl consume --group-id edgar-qdrant-etl-replay
 ```
 
 Locally:
@@ -239,7 +239,7 @@ Locally:
 ```bash
 edgar-etl init-collection                         # Create collection + indexes
 edgar-etl consume                                 # Start Kafka consumer
-edgar-etl consume --group-id edgar-etl-replay     # Replay topic from offset 0
+edgar-etl consume --group-id edgar-qdrant-etl-replay     # Replay topic from offset 0
 edgar-etl process-event --json path/to.json       # Process one event offline
 edgar-etl process-file --file ... --ticker ...    # Process one local file
 edgar-etl search "your question" --top-k 5        # Semantic search
@@ -263,19 +263,19 @@ edgar-etl consume
 Kafka tracks offsets per **consumer group**. To read from the beginning, pass a **new** group name that has never consumed the topic:
 
 ```bash
-edgar-etl consume --group-id edgar-etl-replay
+edgar-etl consume --group-id edgar-qdrant-etl-replay
 ```
 
 Each new `--group-id` starts at the earliest offset (`KAFKA_AUTO_OFFSET_RESET=earliest` by default). Already-loaded filings are skipped unless you also pass `--force`:
 
 ```bash
-edgar-etl consume --group-id edgar-etl-replay --force
+edgar-etl consume --group-id edgar-qdrant-etl-replay --force
 ```
 
 You can also set the default group in `.env` instead of using the flag:
 
 ```env
-KAFKA_GROUP_ID=edgar-etl-replay
+KAFKA_GROUP_ID=edgar-qdrant-etl-replay
 ```
 
 ### Process a single filing (no Kafka)
