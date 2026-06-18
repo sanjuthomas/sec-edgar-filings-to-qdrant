@@ -99,6 +99,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show Qdrant collection point count",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the semantic search web UI and API",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Bind address")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Listen port")
+
     return parser
 
 
@@ -178,6 +185,15 @@ def main(argv: list[str] | None = None) -> None:
             f"Collection '{settings.qdrant_collection}' has {count} points "
             f"at {settings.qdrant_url}"
         )
+        return
+
+    if args.command == "serve":
+        import uvicorn
+
+        from edgar_etl.api import create_app
+
+        app = create_app(settings)
+        uvicorn.run(app, host=args.host, port=args.port)
         return
 
     parser.error(f"unknown command: {args.command}")

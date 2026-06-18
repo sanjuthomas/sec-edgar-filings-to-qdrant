@@ -1,6 +1,6 @@
 # Consumer stack for sec-edgar-filings.
 #
-# This compose file runs ONLY Qdrant and the edgar-etl consumer.
+# This compose file runs ONLY Qdrant, edgar-qdrant-etl, and edgar-qdrant-search.
 # Kafka is owned by sec-edgar-filings:
 #   https://github.com/sanjuthomas/sec-edgar-filings
 #
@@ -26,9 +26,27 @@ services:
       timeout: 5s
       retries: 5
 
-  edgar-etl:
+  edgar-qdrant-search:
     build: .
-    container_name: edgar-etl
+    container_name: edgar-qdrant-search
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: filing_chunks
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    command: ["edgar-etl", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    networks:
+      - sec-edgar
+
+  edgar-qdrant-etl:
+    build: .
+    container_name: edgar-qdrant-etl
     depends_on:
       qdrant:
         condition: service_healthy
@@ -36,7 +54,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: filing_chunks
       EDGAR_DATA_DIR: ${EDGAR_HOST_PATH:-/Volumes/Transcend/edgar}
-      ALLOWED_FORMS: 10-K,10-Q,10-K/A,10-Q/A
+      ALLOWED_FORMS: '["10-K","10-Q","10-K/A","10-Q/A"]'
       # Read-only consumer — Kafka runs in sec-edgar-filings compose.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: filings

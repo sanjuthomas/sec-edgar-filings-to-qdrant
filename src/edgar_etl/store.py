@@ -119,3 +119,16 @@ class FilingStore:
     def count_points(self) -> int:
         info = self._client.get_collection(self._collection_name)
         return info.points_count or 0
+
+    def collection_stats(self) -> tuple[int, int]:
+        chunk_count = self.count_points()
+        if chunk_count == 0:
+            return 0, 0
+
+        facet = self._client.facet(
+            collection_name=self._collection_name,
+            key="accession_number",
+            limit=100_000,
+        )
+        filing_count = len(facet.hits)
+        return filing_count, chunk_count
