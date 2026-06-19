@@ -5,6 +5,7 @@ import structlog
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from edgar_etl.config import Settings
+from edgar_etl.errors import FilingNotIndexableError, NonContentProcessingError
 from edgar_etl.pipeline import configure_logging, parse_event, process_filing_event
 from edgar_etl.store import FilingStore
 
@@ -35,6 +36,7 @@ def run_consumer(
             "bootstrap.servers": settings.kafka_bootstrap_servers,
             "group.id": effective_group_id,
             "auto.offset.reset": settings.kafka_auto_offset_reset,
+            "session.timeout.ms": settings.kafka_session_timeout_ms,
             "enable.auto.commit": False,
         }
     )
@@ -49,6 +51,7 @@ def run_consumer(
         topic=settings.kafka_topic,
         group_id=effective_group_id,
         auto_offset_reset=settings.kafka_auto_offset_reset,
+        session_timeout_ms=settings.kafka_session_timeout_ms,
         skip_if_processed=skip_if_processed,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         qdrant_url=settings.qdrant_url,
@@ -65,6 +68,7 @@ def run_consumer(
                     continue
                 raise KafkaException(message.error())
 
+            event = None
             try:
                 event = parse_event(message.value())
                 process_filing_event(
@@ -72,6 +76,16 @@ def run_consumer(
                     settings,
                     store=store,
                     skip_if_processed=skip_if_processed,
+                )
+                consumer.commit(message=message, asynchronous=False)
+            except (FilingNotIndexableError, NonContentProcessingError) as exc:
+                logger.warning(
+                    "skipping filing without indexing",
+                    error=str(exc),
+                    accession_number=getattr(event, "accession_number", None),
+                    topic=message.topic(),
+                    partition=message.partition(),
+                    offset=message.offset(),
                 )
                 consumer.commit(message=message, asynchronous=False)
             except Exception:
