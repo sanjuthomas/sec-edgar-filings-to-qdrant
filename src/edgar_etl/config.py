@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     kafka_group_id: str = "edgar-qdrant-etl"
     kafka_auto_offset_reset: str = "earliest"
     kafka_session_timeout_ms: int = 180_000
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_model: str = "BAAI/bge-m3"
     embedding_batch_size: int = 32
-    embedding_dimension: int = 384
+    embedding_dimension: int = 1024
     chunk_size: int = 1000
     chunk_overlap: int = 150
     log_level: str = "INFO"

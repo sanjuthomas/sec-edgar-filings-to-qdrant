@@ -68,8 +68,8 @@ sequenceDiagram
         ETL->>Disk: read local_path (.htm)
         Disk-->>ETL: iXBRL HTML
         ETL->>ETL: extract text, chunk
-        ETL->>Model: embed chunks (BAAI/bge-small-en-v1.5)
-        Model-->>ETL: vectors (384-dim)
+        ETL->>Model: embed chunks (BAAI/bge-m3)
+        Model-->>ETL: vectors (1024-dim)
         ETL->>Qdrant: upsert chunk points
         ETL->>Kafka: commit offset
     end
@@ -206,9 +206,9 @@ KAFKA_TOPIC=filings
 KAFKA_GROUP_ID=edgar-qdrant-etl
 KAFKA_AUTO_OFFSET_RESET=earliest
 
-EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+EMBEDDING_MODEL=BAAI/bge-m3
 EMBEDDING_BATCH_SIZE=32
-EMBEDDING_DIMENSION=384
+EMBEDDING_DIMENSION=1024
 
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=150
@@ -228,7 +228,7 @@ LOG_LEVEL=INFO
 | `KAFKA_TOPIC` | Topic to consume (default in sec-edgar-filings: `filings`) |
 | `KAFKA_GROUP_ID` | Consumer group for offset tracking |
 | `KAFKA_AUTO_OFFSET_RESET` | `earliest` = start from offset 0 for new groups |
-| `EMBEDDING_MODEL` | Hugging Face model (384 dimensions) |
+| `EMBEDDING_MODEL` | Hugging Face model (1024 dimensions for bge-m3) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | Text splitting parameters |
 
 ## CLI commands
@@ -332,7 +332,9 @@ Single collection **`filing_chunks`** — one point per text chunk:
 | `section` | ITEM header when detected |
 | `chunk_count`, `processed_at` | Filing-level metadata on each point |
 
-Vector: **384 dimensions**, cosine distance. Keyword indexes on `accession_number`, `ticker`, and `form`.
+Vector: **1024 dimensions**, cosine distance. Keyword indexes on `accession_number`, `ticker`, and `form`.
+
+If you change `EMBEDDING_MODEL` or `EMBEDDING_DIMENSION`, drop and recreate the Qdrant collection (or use a new `QDRANT_COLLECTION` name) before re-indexing.
 
 ## Web UIs
 
@@ -429,7 +431,7 @@ sec-edgar-filings-to-qdrant/
 |-------|---------|
 | Kafka | confluent-kafka |
 | HTML parsing | BeautifulSoup + lxml |
-| Embeddings | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
+| Embeddings | sentence-transformers (`BAAI/bge-m3`) |
 | Vector DB | qdrant-client |
 | Config | pydantic-settings |
 
