@@ -7,7 +7,7 @@ from edgar_etl.config import Settings
 from edgar_etl.consumer import run_consumer
 from edgar_etl.models import FilingDownloadedEvent
 from edgar_etl.pipeline import configure_logging, parse_event, process_filing_event
-from edgar_etl.query import format_results, search_filings
+from edgar_etl.query import format_results, format_text_results, search_filings, search_filings_text
 from edgar_etl.store import FilingStore
 
 
@@ -80,6 +80,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reprocess filings even if accession already exists in Qdrant",
     )
 
+    standby_parser = subparsers.add_parser(
+        "standby",
+        help="Verify connectivity and serve the admin UI (default in Docker; Kafka idle)",
+    )
+    standby_parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    standby_parser.add_argument("--port", type=int, default=8001, help="Listen port")
+
     search_parser = subparsers.add_parser(
         "search",
         help="Semantic search over embedded filing chunks",
@@ -93,6 +100,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     search_parser.add_argument("--ticker", help="Filter by ticker, e.g. AEE")
     search_parser.add_argument("--form", help="Filter by form, e.g. 10-Q or 8-K")
+    search_parser.add_argument(
+        "--mode",
+        choices=["semantic", "keyword"],
+        default="semantic",
+        help="Search mode: semantic (dense vectors) or keyword (BM25)",
+    )
 
     status_parser = subparsers.add_parser(
         "status",
@@ -121,7 +134,8 @@ def main(argv: list[str] | None = None) -> None:
         store.init_collection(vector_size)
         print(
             f"Collection '{settings.qdrant_collection}' ready "
-            f"(vector size {vector_size}) at {settings.qdrant_url}"
+            f"(dense={settings.embedding_dimension}-dim, BM25 sparse + text index) "
+            f"at {settings.qdrant_url}"
         )
         return
 
@@ -167,15 +181,41 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    if args.command == "standby":
+        import uvicorn
+
+        from edgar_etl.admin_api import create_admin_app
+        from edgar_etl.connectivity import check_all
+
+        for status in check_all(settings):
+            if status.ok:
+                print(f"[ok] {status.name}: {status.detail}")
+            else:
+                print(f"[fail] {status.name}: {status.detail}")
+
+        app = create_admin_app(settings)
+        uvicorn.run(app, host=args.host, port=args.port)
+        return
+
     if args.command == "search":
-        results = search_filings(
-            args.question,
-            settings,
-            top_k=args.top_k,
-            ticker=args.ticker,
-            form=args.form,
-        )
-        print(format_results(results))
+        if args.mode == "keyword":
+            results = search_filings_text(
+                args.question,
+                settings,
+                top_k=args.top_k,
+                ticker=args.ticker,
+                form=args.form,
+            )
+            print(format_text_results(results))
+        else:
+            results = search_filings(
+                args.question,
+                settings,
+                top_k=args.top_k,
+                ticker=args.ticker,
+                form=args.form,
+            )
+            print(format_results(results))
         return
 
     if args.command == "status":

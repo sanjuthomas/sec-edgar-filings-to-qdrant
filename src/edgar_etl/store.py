@@ -3,8 +3,16 @@ from datetime import datetime, timezone
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from edgar_etl.models import FilingDownloadedEvent, TextChunk
+from edgar_etl.qdrant_search import (
+    BM25_MODEL,
+    BM25_VECTOR_NAME,
+    DENSE_VECTOR_NAME,
+    TEXT_INDEX_FIELD,
+    is_bm25_ready,
+)
 
 PAYLOAD_INDEX_FIELDS = ("accession_number", "ticker", "form")
 
@@ -24,22 +32,57 @@ class FilingStore:
         self._collection_name = collection_name
 
     def init_collection(self, vector_size: int) -> None:
-        if self._client.collection_exists(self._collection_name):
-            return
-
-        self._client.create_collection(
-            collection_name=self._collection_name,
-            vectors_config=models.VectorParams(
-                size=vector_size,
-                distance=models.Distance.COSINE,
-            ),
-        )
-        for field in PAYLOAD_INDEX_FIELDS:
-            self._client.create_payload_index(
+        if not self._client.collection_exists(self._collection_name):
+            self._client.create_collection(
                 collection_name=self._collection_name,
+                vectors_config={
+                    DENSE_VECTOR_NAME: models.VectorParams(
+                        size=vector_size,
+                        distance=models.Distance.COSINE,
+                    ),
+                },
+                sparse_vectors_config={
+                    BM25_VECTOR_NAME: models.SparseVectorParams(
+                        modifier=models.Modifier.IDF,
+                    ),
+                },
+            )
+        self._ensure_payload_indexes()
+
+    def _ensure_payload_indexes(self) -> None:
+        for field in PAYLOAD_INDEX_FIELDS:
+            self._create_payload_index(
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
+        self._create_payload_index(
+            field_name=TEXT_INDEX_FIELD,
+            field_schema=models.TextIndexParams(
+                type=models.TextIndexType.TEXT,
+                tokenizer=models.TokenizerType.WORD,
+                lowercase=True,
+            ),
+        )
+
+    def _create_payload_index(
+        self,
+        *,
+        field_name: str,
+        field_schema: models.PayloadSchemaType | models.TextIndexParams,
+    ) -> None:
+        try:
+            self._client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name=field_name,
+                field_schema=field_schema,
+            )
+        except UnexpectedResponse as exc:
+            message = str(exc).lower()
+            if "already exists" not in message and "exist" not in message:
+                raise
+
+    def bm25_ready(self) -> bool:
+        return is_bm25_ready(self._client, self._collection_name)
 
     def is_processed(self, accession_number: str) -> bool:
         points, _ = self._client.scroll(
@@ -105,7 +148,13 @@ class FilingStore:
             points.append(
                 models.PointStruct(
                     id=point_id_for_chunk(event.accession_number, chunk.chunk_index),
-                    vector=embedding,
+                    vector={
+                        DENSE_VECTOR_NAME: embedding,
+                        BM25_VECTOR_NAME: models.Document(
+                            text=chunk.content,
+                            model=BM25_MODEL,
+                        ),
+                    },
                     payload=payload,
                 )
             )
@@ -115,6 +164,11 @@ class FilingStore:
             points=points,
         )
         return len(chunks)
+
+    def truncate_collection(self, vector_size: int) -> None:
+        if self._client.collection_exists(self._collection_name):
+            self._client.delete_collection(self._collection_name)
+        self.init_collection(vector_size)
 
     def count_points(self) -> int:
         info = self._client.get_collection(self._collection_name)

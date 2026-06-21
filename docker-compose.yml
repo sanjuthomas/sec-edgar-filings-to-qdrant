@@ -1,22 +1,24 @@
-# Consumer stack for sec-edgar-filings.
+# Consumer stack for sec-edgar-filings-crawler.
 #
 # This compose file runs ONLY Qdrant, edgar-qdrant-etl, and edgar-qdrant-search.
-# Kafka is owned by sec-edgar-filings:
-#   https://github.com/sanjuthomas/sec-edgar-filings
+# Kafka and MongoDB are owned by sec-edgar-filings-crawler:
+#   https://github.com/sanjuthomas/sec-edgar-filings-crawler
 #
-# Start the producer stack first, then this one:
-#   cd sec-edgar-filings && docker compose up -d
+# Start the crawler stack first, then this one:
+#   cd sec-edgar-filings-crawler && docker compose up -d --build
 #   cd sec-edgar-filings-to-qdrant && docker compose up -d --build
 
 services:
+  # Qdrant v1.15+ includes full-text payload indexes and server-side BM25 inference.
+  # See https://qdrant.tech/documentation/search/text-search/
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.2
     container_name: edgar-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - /Volumes/Transcend/qdrant-data:/qdrant/storage
+      - ${QDRANT_DATA_PATH:-${LOCAL_DATA_ROOT}/qdrant-data}:/qdrant/storage
     restart: unless-stopped
     networks:
       - sec-edgar
@@ -36,8 +38,19 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: filing_chunks
       EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_BACKEND: embedded
+      EMBEDDING_CONFIG_PATH: /app/config/embedding-backend.json
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBEDDING_MODEL: bge-m3
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_MAX_SEQ_LENGTH: 512
+      EMBEDDING_BATCH_SIZE: 16
       EMBEDDING_DIMENSION: 1024
+      HF_HOME: /data/hf-cache
       LOG_LEVEL: INFO
+    volumes:
+      - ${QDRANT_SEARCH_DATA_PATH:-${LOCAL_DATA_ROOT:-./.local}/qdrant-search-data}:/data
+      - ${LOCAL_DATA_ROOT:-./.local}/config:/app/config
     ports:
       - "8000:8000"
     command: ["edgar-etl", "serve", "--host", "0.0.0.0", "--port", "8000"]
@@ -48,24 +61,41 @@ services:
   edgar-qdrant-etl:
     build: .
     container_name: edgar-qdrant-etl
+    cpus: 4
+    mem_limit: 32g
+    memswap_limit: 32g
     depends_on:
       qdrant:
         condition: service_healthy
     environment:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: filing_chunks
-      EDGAR_DATA_DIR: ${EDGAR_HOST_PATH:-/Volumes/Transcend/edgar}
-      ALLOWED_FORMS: '["10-K","10-Q","10-K/A","10-Q/A"]'
+      EDGAR_DATA_DIR: ${EDGAR_HOST_PATH:-${LOCAL_DATA_ROOT:-./.local}/edgar-filings}
+      ALLOWED_FORMS: ${ALLOWED_FORMS:-10-K,10-Q,10-K/A,10-Q/A,8-K,8-K/A}
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: sec_edgar_filings
+      MONGO_FILING_METADATA_COLLECTION: filing_metadata
       EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_BACKEND: embedded
+      EMBEDDING_CONFIG_PATH: /app/config/embedding-backend.json
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBEDDING_MODEL: bge-m3
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_MAX_SEQ_LENGTH: 512
+      EMBEDDING_BATCH_SIZE: 16
       EMBEDDING_DIMENSION: 1024
-      # Read-only consumer — Kafka runs in sec-edgar-filings compose.
+      HF_HOME: /root/.cache/huggingface
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: filings
       KAFKA_GROUP_ID: edgar-qdrant-etl
       KAFKA_AUTO_OFFSET_RESET: earliest
     volumes:
-      # Filing .htm content is read from this host path (same as sec-edgar-filings).
-      - ${EDGAR_HOST_PATH:-/Volumes/Transcend/edgar}:${EDGAR_HOST_PATH:-/Volumes/Transcend/edgar}:ro
+      - ${EDGAR_HOST_PATH:-${LOCAL_DATA_ROOT:-./.local}/edgar-filings}:${EDGAR_HOST_PATH:-${LOCAL_DATA_ROOT:-./.local}/edgar-filings}:ro
+      - ${HF_CACHE_HOST_PATH:-${LOCAL_DATA_ROOT:-./.local}/hf-cache}:/root/.cache/huggingface
+      - ${LOCAL_DATA_ROOT:-./.local}/config:/app/config
+    ports:
+      - "8001:8001"
+    command: ["edgar-etl", "standby", "--host", "0.0.0.0", "--port", "8001"]
     restart: unless-stopped
     networks:
       - sec-edgar
@@ -73,4 +103,4 @@ services:
 networks:
   sec-edgar:
     external: true
-    name: ${SEC_EDGAR_DOCKER_NETWORK:-sec-edgar-filings_default}
+    name: ${SEC_EDGAR_DOCKER_NETWORK:-sec-edgar_default}

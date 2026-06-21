@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir ".${INSTALL_EXTRAS}"
 
 ENV EDGAR_DATA_DIR=/Volumes/Transcend/edgar
 ENV QDRANT_URL=http://qdrant:6333
+ENV MONGO_URI=mongodb://mongo:27017
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092
 
-CMD ["edgar-etl", "consume"]
+CMD ["edgar-etl", "standby", "--host", "0.0.0.0", "--port", "8001"]
