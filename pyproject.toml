@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sec-edgar-filings-to-qdrant"
-version = "0.5.0"
+version = "0.6.0"
 description = "Kafka consumer that extracts SEC EDGAR filings from local disk, embeds them, and loads into Qdrant."
 readme = "README.md"
 license = "MIT"
