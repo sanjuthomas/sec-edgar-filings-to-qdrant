@@ -142,8 +142,9 @@ sequenceDiagram
         Disk-->>Admin: iXBRL HTML
         Admin->>Admin: extract text, chunk
         Admin->>Model: embed chunks (BGE-M3 via embedded or Ollama)
-        Model-->>Admin: vectors (1024-dim)
-        Admin->>Qdrant: upsert dense vectors + BM25 sparse + content payload
+        Model-->>Admin: dense vectors (1024-dim)
+        Note over Admin,Qdrant: Qdrant computes BM25 sparse vectors server-side (Qdrant/bm25)
+        Admin->>Qdrant: upsert dense + BM25 sparse (content-bm25) + content payload
         Admin->>Kafka: commit offset
     end
 ```
@@ -163,7 +164,8 @@ sequenceDiagram
         Model-->>Search: query vector
         Search->>Qdrant: dense nearest-neighbor (cosine)
     else keyword mode
-        Search->>Qdrant: BM25 sparse search (content-bm25)
+        Note over Search,Qdrant: No embedding — Qdrant tokenizes query with Qdrant/bm25
+        Search->>Qdrant: BM25 sparse search on content-bm25
     end
     Qdrant-->>Search: top-K filing chunks + metadata
     Search-->>User: matching passages
@@ -487,7 +489,18 @@ Single collection **`filing_chunks`** — one point per text chunk. Unlike [sec-
 | `section` | ITEM header when detected |
 | `chunk_count`, `processed_at` | Filing-level metadata on each point |
 
-Each chunk is stored with **two indexes** (mirroring [sec-edgar-filings-to-pgvector](https://github.com/sanjuthomas/sec-edgar-filings-to-pgvector)):
+### Named vectors
+
+Each point in `filing_chunks` has **two named vector slots** (created by `edgar-etl init-collection`):
+
+| Slot | Type | Config | Used for |
+|------|------|--------|----------|
+| `dense` | Dense (1024-dim, cosine) | `VectorParams` from `EMBEDDING_DIMENSION` | Semantic search — embeddings from embedded or Ollama BGE-M3 |
+| `content-bm25` | Sparse (BM25) | `SparseVectorParams` with IDF modifier | Keyword search — Qdrant server-side inference |
+
+### Dual indexes (semantic + keyword)
+
+Each chunk is stored with **two search indexes** (mirroring [sec-edgar-filings-to-pgvector](https://github.com/sanjuthomas/sec-edgar-filings-to-pgvector)):
 
 | Index | Qdrant field | pgvector equivalent | Purpose |
 |-------|--------------|---------------------|---------|
@@ -495,16 +508,78 @@ Each chunk is stored with **two indexes** (mirroring [sec-edgar-filings-to-pgvec
 | Keyword / BM25 | `content-bm25` sparse vector + `content` payload | `filing_chunks.content` (ParadeDB BM25) | Keyword search |
 | Filing metadata | Repeated on every point payload | `filings` table (one row per accession) | Accession-level fields; no separate Qdrant collection |
 
-Keyword payload indexes on `accession_number`, `ticker`, and `form`. A **full-text index** on `content` enables lexical filters ([Qdrant text search](https://qdrant.tech/documentation/search/text-search/)).
+Keyword **payload** indexes on `accession_number`, `ticker`, and `form` (filtering by ticker/form in search). A **full-text payload index** on `content` supports lexical filters; BM25 **ranking** uses the `content-bm25` sparse vector, not the payload text index.
 
-On ingest, each upsert writes:
-- **Dense vector** from the active embedding backend (`embedded` or `ollama`)
-- **BM25 sparse vector** via Qdrant server-side inference (`Qdrant/bm25` model on chunk text)
-- **Payload** including full `content` text
+On ingest, each upsert writes in a single operation:
+- **`dense`** — embedding from the active backend (`embedded` or `ollama`)
+- **`content-bm25`** — Qdrant tokenizes chunk text with the built-in **`Qdrant/bm25`** model and stores the sparse vector (no separate BM25 ETL step)
+- **Payload** — full `content` text plus filing metadata
 
-The `qdrant/qdrant` image (v1.15+) runs BM25 inference in-process — no separate inference container is required.
+On query:
+- **Semantic** — embed the question with the same backend as ingest, search `dense` by cosine similarity
+- **Keyword** — pass query text to Qdrant as `Document(text=..., model="Qdrant/bm25")`, search `content-bm25` by BM25 score (no embedding model involved)
 
-If you change `EMBEDDING_MODEL` or `EMBEDDING_DIMENSION`, drop and recreate the Qdrant collection (or use a new `QDRANT_COLLECTION` name) before re-indexing. Run `edgar-etl init-collection` after recreating a collection to apply payload indexes.
+The `qdrant/qdrant:v1.18.2` image runs BM25 inference in-process ([Qdrant text search](https://qdrant.tech/documentation/search/text-search/)) — unlike pgvector, which uses ParadeDB/pg_search on Postgres. No separate inference container is required.
+
+**BM25 readiness:** the admin UI and search UI expose `bm25_ready` when the collection defines the `content-bm25` sparse vector. Collections created before BM25 support (or without `init-collection`) show `BM25 missing` until you truncate and recreate.
+
+If you change `EMBEDDING_MODEL` or `EMBEDDING_DIMENSION`, drop and recreate the collection (or use a new `QDRANT_COLLECTION` name) before re-indexing. Run `edgar-etl init-collection` after recreating a collection to apply dense + sparse vector config and payload indexes.
+
+## Qdrant BM25 keyword search
+
+This project uses **Qdrant native BM25** — not a separate search engine or Postgres extension.
+
+| | pgvector stack | This repo (Qdrant) |
+|--|----------------|-------------------|
+| Keyword engine | ParadeDB `pg_search` BM25 on `filing_chunks.content` | Qdrant sparse vector `content-bm25` |
+| Ingest | Text stored in Postgres; BM25 index updated on insert | Upsert sends `Document(text=chunk, model="Qdrant/bm25")` — Qdrant computes sparse weights |
+| Query | SQL `pdb.score(id)` | `query_points(..., query=Document(text=query, model="Qdrant/bm25"), using="content-bm25")` |
+| Embedding backend | Affects semantic search only | Affects semantic search only — **keyword mode ignores embedding backend** |
+
+### Setup
+
+BM25 requires Qdrant **v1.15+** (compose uses **v1.18.2**). On first deploy:
+
+```bash
+docker compose up -d qdrant
+docker compose run --rm edgar-qdrant-etl edgar-etl init-collection
+```
+
+`init-collection` creates `filing_chunks` with:
+- Named dense vector `dense` (size from `EMBEDDING_DIMENSION`, default 1024)
+- Named sparse vector `content-bm25` with IDF modifier
+- Payload indexes on `accession_number`, `ticker`, `form`, and full-text on `content`
+
+### Verify
+
+- **Admin UI** ([http://localhost:8001](http://localhost:8001)) — connectivity shows `qdrant_bm25: OK`; stats show **BM25 sparse: ready** and **BM25 chunks** count
+- **Search UI** ([http://localhost:8000](http://localhost:8000)) — stats bar shows **BM25 ready**
+- **CLI** — `edgar-etl search "risk factors" --mode keyword --top-k 5`
+
+Example Qdrant client query (same as admin status panel):
+
+```python
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+
+client = QdrantClient(url="http://localhost:6333")
+client.query_points(
+    collection_name="filing_chunks",
+    query=models.Document(text="revenue growth", model="Qdrant/bm25"),
+    using="content-bm25",
+    limit=10,
+)
+```
+
+### Re-index after BM25 schema change
+
+If `bm25_ready` is **false** on an existing collection (e.g. migrated data without the sparse vector slot):
+
+1. Admin UI → **Truncate** → `filing_chunks`, or delete the collection in the [Qdrant dashboard](http://localhost:6333/dashboard)
+2. Run `edgar-etl init-collection`
+3. Re-ingest via **Load ticker** or Kafka consumption
+
+Semantic search on old points may still work; keyword search will fail until the collection is recreated and data is re-indexed.
 
 ## Web UIs
 
@@ -613,14 +688,15 @@ edgar-etl search "executive compensation approval"
 
 ### Keyword search (BM25)
 
-Match exact terms and phrases without embedding the query:
+Match exact terms and phrases **without embedding the query**. Keyword search uses Qdrant's `content-bm25` sparse vector and the built-in `Qdrant/bm25` model — it does **not** depend on the active embedding backend (embedded vs Ollama).
 
 ```bash
 edgar-etl search "director election" --mode keyword --top-k 5
 edgar-etl search "Item 1A risk factors" --mode keyword --form 10-K
+edgar-etl search "revenue growth" --mode keyword --ticker GS --top-k 10
 ```
 
-Higher **rank** = better BM25 match. Requires a collection created with `edgar-etl init-collection` (includes the `content-bm25` sparse vector).
+Higher **rank** = better BM25 match. Requires `bm25_ready` (collection created with `edgar-etl init-collection`). See [Qdrant BM25 keyword search](#qdrant-bm25-keyword-search) for setup and troubleshooting.
 
 ### Full Q&A with an LLM
 
@@ -669,7 +745,8 @@ sec-edgar-filings-to-qdrant/
 | Kafka | confluent-kafka |
 | MongoDB | pymongo |
 | HTML parsing | BeautifulSoup + lxml |
-| Embeddings | sentence-transformers (`BAAI/bge-m3`) or Ollama (`bge-m3`) |
+| Embeddings | sentence-transformers (`BAAI/bge-m3`) or Ollama (`bge-m3`) — semantic search only |
+| Keyword search | Qdrant native BM25 (`Qdrant/bm25` on sparse vector `content-bm25`) |
 | Vector DB | qdrant-client (`qdrant/qdrant:v1.18.2`) |
 | Web UI | FastAPI + uvicorn |
 | Config | pydantic-settings |
@@ -695,9 +772,11 @@ Extraction tests use a sample 8-K under `${SEC_EDGAR_DOCUMENT_ROOT}` if availabl
 | Load ticker fails | Set `MONGO_URI` and ensure MongoDB is running in sec-edgar-filings-crawler; pick an embedding backend and at least one filing form in the admin UI |
 | Admin UI changes not visible | Static HTML is baked into the Docker image — run `docker compose up -d --build edgar-qdrant-etl` (or copy `admin.html` into the running container) |
 | Ollama backend fails | Run Ollama on the host, `ollama pull bge-m3`, and verify `OLLAMA_BASE_URL` (Docker: `host.docker.internal:11434`) |
-| Semantic search mismatch | Search and ingest must use the same backend — check admin UI **Embedding backend** and search UI stats |
+| Semantic search mismatch | Search and ingest must use the same embedding backend — check admin UI **Embedding backend** and search UI stats |
+| Keyword search fails / `BM25 missing` | Run `edgar-etl init-collection`, then re-ingest; admin connectivity `qdrant_bm25` must be OK |
+| Keyword works but semantic does not | Check embedding backend — BM25 does not use embeddings |
 | `filing not found` | Path outside `SEC_EDGAR_DOCUMENT_ROOT` / `EDGAR_DATA_DIR`; crawler and ETL must share the same mount; check Docker file sharing for your chosen host path |
-| Poor search results | Use the same embedding backend for load and search; recreate collection after dimension/backend changes |
+| Poor semantic search results | Use the same embedding backend for load and search; recreate collection after dimension/backend changes |
 | Reprocess a filing | `edgar-etl process-event --json ... --force` or **Load ticker** in admin UI |
 | Clear all indexed data | Admin UI **Truncate** or `edgar-etl init-collection` after manual collection delete |
 | Replay Kafka from start | Admin UI → Kafka → **Earliest**, or `edgar-etl consume --group-id <new-name>` |
