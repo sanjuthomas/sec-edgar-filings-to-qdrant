@@ -248,30 +248,11 @@
       border: 1px dashed var(--border);
       border-radius: var(--radius);
     }
-
-    .nav-links {
-      display: flex;
-      gap: 1rem;
-      margin-bottom: 1rem;
-      font-size: 0.9rem;
-    }
-
-    .nav-links a {
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-
-    .nav-links a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <nav class="nav-links">
-        <a href="/">Search</a>
-        <a href="http://localhost:8001/">Admin</a>
-      </nav>
       <h1>SEC EDGAR Semantic Search</h1>
       <p class="subtitle">Search embedded filing chunks in Qdrant to verify your data pipeline.</p>
       <div class="stats" id="stats">

@@ -256,55 +256,17 @@
     code {
       font-size: 0.85em;
     }
-
-    .nav-links {
-      display: flex;
-      gap: 1rem;
-      margin-bottom: 1rem;
-      font-size: 0.9rem;
-    }
-
-    .nav-links a {
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-
-    .nav-links a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <nav class="nav-links">
-        <a href="http://localhost:8000/">Search UI</a>
-        <a href="/">Admin</a>
-      </nav>
       <h1>SEC EDGAR ETL Admin</h1>
       <p class="subtitle">Manage Qdrant data and Kafka consumption. ETL starts in standby until you start the consumer.</p>
     </header>
 
     <div class="stats" id="stats"></div>
     <div class="services" id="services"></div>
-
-    <section class="card" id="embedding-backend-card">
-      <h2>Embedding backend</h2>
-      <p>
-        Choose how chunks and search queries are embedded. Both the ETL and search UI read the
-        same backend from a shared config file (<code>EMBEDDING_CONFIG_PATH</code>).
-      </p>
-      <div class="row">
-        <div>
-          <label for="embedding-backend">Active backend</label>
-          <select id="embedding-backend">
-            <option value="embedded">Embedded — BGE-M3 (sentence-transformers)</option>
-            <option value="ollama">Ollama — BGE-M3 (GPU via host)</option>
-          </select>
-        </div>
-        <button type="button" id="set-embedding-backend-btn">Apply backend</button>
-      </div>
-      <div class="status-line" id="embedding-backend-status"></div>
-    </section>
 
     <section class="card" id="embedding-info-card">
       <h2>Qdrant — dense vectors &amp; embedding model</h2>
@@ -410,13 +372,19 @@
     const qdrantSearchExampleEl = document.getElementById("qdrant-search-example-query");
     const schemaInfoEl = document.getElementById("schema-info");
     const pipelineInfoEl = document.getElementById("pipeline-info");
-    const embeddingBackendSelect = document.getElementById("embedding-backend");
     const loadEmbeddingBackendSelect = document.getElementById("load-embedding-backend");
     const loadTickerBtn = document.getElementById("load-ticker-btn");
+    let loadInProgress = false;
 
     function updateLoadTickerControls() {
+      if (loadInProgress) {
+        loadTickerBtn.disabled = true;
+        return;
+      }
       const backendSelected = loadEmbeddingBackendSelect.value !== "";
-      loadTickerBtn.disabled = !backendSelected;
+      const formsSelected = document.querySelectorAll(".form-checkbox:checked").length > 0;
+      const tickerEntered = document.getElementById("ticker").value.trim() !== "";
+      loadTickerBtn.disabled = !(backendSelected && formsSelected && tickerEntered);
     }
 
     function setStatus(el, message, type = "info") {
@@ -449,8 +417,6 @@
         renderQdrantSearchInfo(data.qdrant_search);
         renderSchemaInfo(data.collection_schema);
         renderPipelineInfo(data.pipeline);
-
-        embeddingBackendSelect.value = data.embedding.backend;
 
         setStatus(
           document.getElementById("kafka-status"),
@@ -578,25 +544,6 @@
       await truncateTarget(table, document.getElementById("truncate-status"));
     });
 
-    document.getElementById("set-embedding-backend-btn").addEventListener("click", async () => {
-      const backend = embeddingBackendSelect.value;
-      const statusEl = document.getElementById("embedding-backend-status");
-      setStatus(statusEl, "Updating embedding backend…", "info");
-      try {
-        const res = await fetch("/api/admin/embedding-backend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ backend }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || res.statusText);
-        setStatus(statusEl, data.message, "success");
-        refreshStatus();
-      } catch (err) {
-        setStatus(statusEl, err.message, "error");
-      }
-    });
-
     document.getElementById("load-ticker-btn").addEventListener("click", async () => {
       const ticker = document.getElementById("ticker").value.trim();
       const backend = document.getElementById("load-embedding-backend").value;
@@ -619,7 +566,8 @@
 
       setStatus(statusEl, `Loading ${ticker.toUpperCase()} with ${backend}… this may take a while.`, "info");
       detailsEl.hidden = true;
-      loadTickerBtn.disabled = true;
+      loadInProgress = true;
+      updateLoadTickerControls();
 
       try {
         const res = await fetch("/api/admin/load-ticker", {
@@ -638,15 +586,20 @@
           detailsEl.hidden = false;
           detailsEl.textContent = data.errors.join("\n");
         }
-        loadEmbeddingBackendSelect.selectedIndex = 0;
-        updateLoadTickerControls();
         refreshStatus();
       } catch (err) {
         setStatus(statusEl, err.message, "error");
       } finally {
+        loadInProgress = false;
         updateLoadTickerControls();
       }
     });
+
+    document.getElementById("ticker").addEventListener("input", updateLoadTickerControls);
+    document.querySelectorAll(".form-checkbox").forEach((el) => {
+      el.addEventListener("change", updateLoadTickerControls);
+    });
+    loadEmbeddingBackendSelect.addEventListener("change", updateLoadTickerControls);
 
     document.getElementById("kafka-start-btn").addEventListener("click", async () => {
       const offset = document.getElementById("offset-mode").value;
@@ -680,8 +633,6 @@
         setStatus(statusEl, err.message, "error");
       }
     });
-
-    loadEmbeddingBackendSelect.addEventListener("change", updateLoadTickerControls);
 
     refreshStatus();
     updateLoadTickerControls();

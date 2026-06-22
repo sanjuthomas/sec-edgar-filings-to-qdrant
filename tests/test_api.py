@@ -23,7 +23,6 @@ def test_index_returns_html(client: TestClient) -> None:
     assert 'id="search-form"' in response.text
     assert "Qdrant" in response.text
     assert 'id="mode"' in response.text
-    assert 'href="http://localhost:8001/"' in response.text
 
 
 @patch("edgar_etl.api.get_embedding_backend", return_value="embedded")

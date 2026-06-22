@@ -24,9 +24,9 @@ def test_admin_index_returns_html(admin_client: TestClient) -> None:
     assert "SEC EDGAR ETL Admin" in response.text
     assert 'id="truncate-btn"' in response.text
     assert "Qdrant — BM25 keyword search" in response.text
-    assert 'id="embedding-backend"' in response.text
     assert 'id="load-embedding-backend"' in response.text
     assert "Select backend" in response.text
+    assert 'id="embedding-backend-card"' not in response.text
 
 
 @patch("edgar_etl.admin_api.get_qdrant_search_config")
